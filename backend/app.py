@@ -188,18 +188,44 @@ def init_db():
             ('Equity Bank',)
         ])
     
-    # Seed default super admin if not exists
-    cursor.execute("SELECT * FROM users WHERE username = ?", ('admin',))
-    if not cursor.fetchone():
-        hashed_pw = generate_password_hash('admin123')
-        cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", 
-                      ('admin', hashed_pw, 'super_admin'))
-        
-        # Also seed a cashier for testing
-        hashed_cashier = generate_password_hash('cashier123')
-        cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)", 
-                      ('cashier', hashed_cashier, 'cashier'))
-        print("Seeded default users (admin/admin123, cashier/cashier123)")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )
+    ''')
+    ccount = cursor.execute("SELECT COUNT(*) as c FROM categories").fetchone()['c']
+    if ccount == 0:
+        cursor.executemany("INSERT INTO categories (name) VALUES (?)", [
+            ('Home Appliances',),
+            ('Electronics',),
+            ('Beddings',),
+            ('Household Items',)
+        ])
+    
+    # Seed default users: superadmin, admin, cashier
+    # Super Admin
+    existing_super = cursor.execute("SELECT 1 FROM users WHERE username = ?", ('superadmin',)).fetchone()
+    if not existing_super:
+        super_pw = generate_password_hash('super123')
+        cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                       ('superadmin', super_pw, 'super_admin'))
+    # Admin
+    existing_admin = cursor.execute("SELECT role FROM users WHERE username = ?", ('admin',)).fetchone()
+    if not existing_admin:
+        admin_pw = generate_password_hash('admin123')
+        cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                       ('admin', admin_pw, 'admin'))
+    else:
+        if existing_admin['role'] == 'super_admin':
+            cursor.execute("UPDATE users SET role = 'admin' WHERE username = 'admin'")
+    # Cashier
+    existing_cashier = cursor.execute("SELECT 1 FROM users WHERE username = ?", ('cashier',)).fetchone()
+    if not existing_cashier:
+        cashier_pw = generate_password_hash('cashier123')
+        cursor.execute("INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                       ('cashier', cashier_pw, 'cashier'))
+    print("Default users ensured (superadmin/super123, admin/admin123, cashier/cashier123)")
     
     conn.commit()
     conn.close()
@@ -251,6 +277,19 @@ def role_required(allowed_roles):
             if user_role not in allowed_roles:
                 return jsonify({'message': 'Permission denied'}), 403
                 
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+
+def role_required_strict(allowed_roles):
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not hasattr(request, 'current_user'):
+                return jsonify({'message': 'User not authenticated'}), 401
+            user_role = request.current_user['role']
+            if user_role not in allowed_roles:
+                return jsonify({'message': 'Permission denied'}), 403
             return f(*args, **kwargs)
         return decorated_function
     return decorator
@@ -444,7 +483,7 @@ def list_banks():
 
 @app.route('/api/banks', methods=['POST'])
 @token_required
-@role_required(['admin'])
+@role_required_strict(['admin'])
 def add_bank():
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
@@ -461,12 +500,43 @@ def add_bank():
         return jsonify({"error": str(e)}), 400
     finally:
         conn.close()
+@app.route('/api/categories', methods=['GET'])
+@token_required
+def list_categories():
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("SELECT id, name FROM categories ORDER BY name").fetchall()
+        return jsonify({"message": "success", "data": [dict(ix) for ix in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+@app.route('/api/categories', methods=['POST'])
+@token_required
+@role_required(['admin'])
+def add_category():
+    data = request.get_json() or {}
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({"error": "name required"}), 400
+    conn = get_db_connection()
+    try:
+        conn.execute("INSERT INTO categories (name) VALUES (?)", (name,))
+        conn.commit()
+        return jsonify({"message": "success"})
+    except sqlite3.IntegrityError:
+        return jsonify({"error": "category already exists"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
 
 # GET /products
 @app.route('/products', methods=['GET'])
 @app.route('/api/products', methods=['GET']) # Alias for frontend compatibility
 @token_required
-@role_required(['admin', 'cashier'])
+@role_required(['admin', 'cashier', 'assistant'])
 def get_products():
     conn = get_db_connection()
     products = conn.execute('SELECT * FROM products').fetchall()
@@ -482,7 +552,7 @@ def get_products():
 @app.route('/products/barcode/<barcode>', methods=['GET'])
 @app.route('/api/products/barcode/<barcode>', methods=['GET'])
 @token_required
-@role_required(['admin', 'cashier'])
+@role_required(['admin', 'cashier', 'assistant'])
 def get_product_by_barcode(barcode):
     conn = get_db_connection()
     product = conn.execute('SELECT * FROM products WHERE barcode = ?', (barcode,)).fetchone()
@@ -501,7 +571,7 @@ def serve_brand_upload(filename):
 
 @app.route('/api/products', methods=['POST'])
 @token_required
-@role_required(['admin'])
+@role_required(['admin', 'assistant'])
 def create_product():
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
@@ -575,7 +645,12 @@ def create_user():
     role = (data.get('role') or 'cashier').strip()
     if not username or not password:
         return jsonify({"error": "username and password required"}), 400
-    if role not in ['cashier', 'admin']:
+    allowed_roles = ['cashier', 'admin', 'assistant']
+    if role == 'super_admin':
+        # Allow creating super_admin from admin or existing super_admin
+        if request.current_user['role'] not in ['admin', 'super_admin']:
+            role = 'cashier'
+    elif role not in allowed_roles:
         role = 'cashier'
     conn = get_db_connection()
     try:
@@ -635,7 +710,7 @@ def admin_set_password(user_id):
 
 @app.route('/api/products/<int:id>/image/upload', methods=['POST'])
 @token_required
-@role_required(['admin'])
+@role_required(['admin', 'assistant'])
 def upload_product_image(id):
     file = request.files.get('file')
     if not file:
@@ -913,7 +988,7 @@ def get_low_stock_products():
 
 @app.route('/api/products/<int:id>/image', methods=['POST'])
 @token_required
-@role_required(['admin'])
+@role_required(['admin', 'assistant'])
 def set_product_image(id):
     data = request.get_json() or {}
     image_url = (data.get('image_url') or '').strip()
@@ -938,7 +1013,7 @@ def set_product_image(id):
 
 @app.route('/api/products/<int:id>/image', methods=['DELETE'])
 @token_required
-@role_required(['admin'])
+@role_required(['admin', 'assistant'])
 def remove_product_image(id):
     try:
         cloudinary.uploader.destroy(f"pimut/products/product_{id}", invalidate=True)
@@ -957,7 +1032,7 @@ def remove_product_image(id):
 # Daily Report (Extra, for frontend compatibility)
 @app.route('/api/sales/daily', methods=['GET'])
 @token_required
-@role_required(['admin'])
+@role_required(['admin', 'assistant'])
 def get_daily_sales():
     conn = get_db_connection()
     try:
@@ -980,7 +1055,7 @@ def get_daily_sales():
 
 @app.route('/api/reports/daily', methods=['GET'])
 @token_required
-@role_required(['admin'])
+@role_required(['admin', 'assistant'])
 def report_daily():
     start = request.args.get('start')
     end = request.args.get('end')
@@ -1127,6 +1202,6 @@ def export_products_csv():
     finally:
         conn.close()
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000)
-    # Replacing Node seems cleaner for "Create a Flask backend".
-    app.run(host='0.0.0.0', port=3000, debug=False, use_reloader=False)
+    host = os.environ.get('POS_BIND_HOST', '0.0.0.0')
+    port = int(os.environ.get('POS_PORT', '5000'))
+    app.run(host=host, port=port)

@@ -1,6 +1,13 @@
 // State
 let products = [];
 let cart = [];
+const DEFAULT_CATEGORIES = ['Home Appliances', 'Electronics', 'Beddings', 'Household Items'];
+let categories = [];
+let customCategories = [];
+try {
+    customCategories = JSON.parse(localStorage.getItem('pos_custom_categories') || '[]');
+    if (!Array.isArray(customCategories)) customCategories = [];
+} catch (e) { customCategories = []; }
 let authToken = localStorage.getItem('pos_token');
 let API_BASE = (localStorage.getItem('pos_api_base') || '').replace(/\/$/, '');
 const apiIndicator = document.getElementById('api-base-indicator');
@@ -15,9 +22,13 @@ try {
         // On Vercel, ALWAYS use relative paths. Clear any stored absolute URL.
         API_BASE = '';
         localStorage.removeItem('pos_api_base');
-    } else if (isLocal && API_BASE && !API_BASE.includes(hostname)) {
-        API_BASE = '';
-        localStorage.removeItem('pos_api_base');
+    } else if (isLocal && API_BASE) {
+        // Allow both localhost and 127.0.0.1 interchangeably during local dev
+        const isApiLocal = /^(https?:\/\/)?(localhost|127\.0\.0\.1)(:\d+)?$/i.test(API_BASE);
+        if (!isApiLocal) {
+            API_BASE = '';
+            localStorage.removeItem('pos_api_base');
+        }
     }
 } catch (e) { /* ignore */ }
 
@@ -119,6 +130,7 @@ async function login() {
             document.querySelector('.user-profile span').textContent = userName + ' (' + userRole + ')';
             setupRoleUI();
             fetchProducts();
+            fetchCategories();
         } else {
             errorEl.textContent = result.message || 'Login failed';
             errorEl.style.display = 'block';
@@ -139,6 +151,8 @@ if (authToken) {
     }
     setupRoleUI();
     fetchProducts();
+    fetchCategories();
+    loadBrandLogo();
     loadBrandLogo();
     if (barcodeInput) {
         barcodeInput.focus();
@@ -199,7 +213,9 @@ async function apiCall(url, options = {}) {
         authToken = null;
         localStorage.removeItem('pos_token');
         loginModal.style.display = 'block';
-        throw new Error('Unauthorized');
+        if (!options.allow401) {
+            throw new Error('Unauthorized');
+        }
     }
     
     return response;
@@ -232,6 +248,7 @@ window.setApiBase = async function() {
 // --- Navigation ---
 function getAllowedTabs(role) {
     if (role === 'cashier') return ['pos'];
+    if (role === 'assistant') return ['pos', 'reports'];
     if (role === 'admin') return ['pos', 'reports', 'inventory', 'users'];
     return ['pos', 'reports', 'backups', 'inventory', 'users'];
 }
@@ -245,11 +262,117 @@ function setupRoleUI() {
     const users = document.getElementById('nav-users');
     const adminPanel = document.getElementById('product-admin-panel');
     if (reports) reports.style.display = allowed.includes('reports') ? '' : 'none';
-    if (inventory) inventory.style.display = role === 'cashier' ? 'none' : '';
+    if (inventory) inventory.style.display = (role === 'cashier' || role === 'assistant') ? 'none' : '';
     if (backups) backups.style.display = allowed.includes('backups') ? '' : 'none';
     if (users) users.style.display = allowed.includes('users') ? '' : 'none';
-    if (adminPanel) adminPanel.style.display = (role === 'admin' || role === 'super_admin') ? '' : 'none';
+    if (adminPanel) {
+        const canUse = (role === 'admin' || role === 'super_admin' || role === 'assistant');
+        adminPanel.style.display = canUse ? 'none' : 'none'; // default collapsed
+    }
+    const cashierCard = document.querySelector('#reports-view .report-card:nth-of-type(2)');
+    const pmCard = document.querySelector('#reports-view .report-card:nth-of-type(3)');
+    if (cashierCard) cashierCard.style.display = (role === 'admin' || role === 'super_admin') ? '' : 'none';
+    if (pmCard) pmCard.style.display = (role === 'admin' || role === 'super_admin') ? '' : 'none';
+    const addBankBtn = document.querySelector('button[onclick="addBank()"]');
+    const newBankInput = document.getElementById('new-bank-name');
+    const banksCard = newBankInput ? newBankInput.closest('.report-card') : null;
+    const showBankAdd = role === 'admin';
+    if (addBankBtn) addBankBtn.style.display = showBankAdd ? '' : 'none';
+    if (newBankInput) newBankInput.style.display = showBankAdd ? '' : 'none';
+    if (banksCard) {
+        const table = banksCard.querySelector('table');
+        if (table) table.style.display = '';
+    }
+    const addCategoryBtn = document.querySelector('button[onclick="addCategory()"]');
+    const newCategoryInput = document.getElementById('new-category-name');
+    const showCategoryAdd = role === 'admin';
+    if (addCategoryBtn) addCategoryBtn.style.display = showCategoryAdd ? '' : 'none';
+    if (newCategoryInput) newCategoryInput.style.display = showCategoryAdd ? '' : 'none';
 }
+
+window.toggleAdminPanel = function() {
+    const panel = document.getElementById('product-admin-panel');
+    if (!panel) return;
+    const current = window.getComputedStyle(panel).display;
+    panel.style.display = (current === 'none') ? '' : 'none';
+};
+
+async function fetchCategories() {
+    try {
+        const response = await apiCall('/api/categories');
+        const result = await response.json();
+        if (response.ok && result.message === 'success') {
+            categories = (result.data || []).map(c => c.name);
+        } else {
+            categories = DEFAULT_CATEGORIES.slice();
+        }
+    } catch (e) {
+        categories = DEFAULT_CATEGORIES.slice();
+    }
+    // Merge in any locally added categories
+    const all = Array.from(new Set([...(categories || []), ...(customCategories || [])]));
+    const sel = document.getElementById('admin-prod-category');
+    if (sel) {
+        sel.innerHTML = ['<option value=\"\">Select category</option>'].concat(
+            all.map(n => `<option value=\"${n}\">${n}</option>`)
+        ).join('');
+    }
+}
+
+window.addCategory = async function() {
+    const input = document.getElementById('new-category-name');
+    const name = (input && input.value || '').trim();
+    if (!name) { alert('Enter category name'); return; }
+    if (userRole !== 'admin') { alert('Admin only: permission denied'); return; }
+    // Client-side duplicate check (case-insensitive); select existing instead
+    const existing = Array.from(new Set([...(categories || []), ...(customCategories || [])]));
+    if (existing.map(n => n.toLowerCase()).includes(name.toLowerCase())) {
+        const sel = document.getElementById('admin-prod-category');
+        const match = existing.find(n => n.toLowerCase() === name.toLowerCase());
+        if (sel) sel.value = match;
+        if (input) input.value = '';
+        alert('Category already exists');
+        return;
+    }
+    // Optimistic local add to avoid blocking on network
+    customCategories.push(name);
+    localStorage.setItem('pos_custom_categories', JSON.stringify(customCategories));
+    await fetchCategories();
+    const sel = document.getElementById('admin-prod-category');
+    if (sel) sel.value = name;
+    try {
+        const response = await apiCall('/api/categories', {
+            method: 'POST',
+            body: JSON.stringify({ name }),
+            allow401: true
+        });
+        let result;
+        try { result = await response.json(); } catch { 
+            const text = await response.text();
+            result = { error: text };
+        }
+        if (response.status === 401) {
+            // Keep local category; prompt login
+            alert('Please login and try again');
+            return;
+        }
+        if (response.status === 403) {
+            alert('Admin only: permission denied');
+            return;
+        }
+        if (response.ok && result.message === 'success') {
+            if (input) input.value = '';
+            await fetchCategories();
+            alert('Category added');
+        } else {
+            // Keep local category, show server message
+            alert(result.error || 'Failed to add category');
+        }
+    } catch (e) {
+        // Keep local category; avoid noisy error
+        alert('Category added (saved locally). Backend unreachable.');
+    }
+};
 
 window.switchTab = function(tabName) {
     const allowed = getAllowedTabs(userRole);
@@ -509,10 +632,12 @@ function renderUsers(rows) {
 window.createUser = async function() {
     const uEl = document.getElementById('new-user-username');
     const pEl = document.getElementById('new-user-password');
+    const rEl = document.getElementById('new-user-role');
     const err = document.getElementById('new-user-error');
     if (!uEl || !pEl) return;
     const username = (uEl.value || '').trim();
     const password = (pEl.value || '').trim();
+    const role = (rEl && rEl.value) ? rEl.value : 'cashier';
     if (!username || !password) {
         if (err) { err.textContent = 'Username and password required'; err.style.display = 'block'; }
         return;
@@ -520,15 +645,16 @@ window.createUser = async function() {
     try {
         const response = await apiCall('/api/users', {
             method: 'POST',
-            body: JSON.stringify({ username, password, role: 'cashier' })
+            body: JSON.stringify({ username, password, role })
         });
         const result = await response.json();
         if (response.ok && result.message === 'success') {
             if (err) { err.style.display = 'none'; }
             uEl.value = '';
             pEl.value = '';
+            if (rEl) rEl.value = 'cashier';
             fetchUsers();
-            alert('Cashier created');
+            alert('User created');
         } else {
             if (err) { err.textContent = result.error || 'Create failed'; err.style.display = 'block'; }
         }
@@ -596,7 +722,7 @@ function renderProducts(productsToRender) {
         const productCard = document.createElement('div');
         productCard.className = 'product-card' + (product.low_stock ? ' low-stock' : '');
         const imgHtml = product.image_url ? `<img src="${product.image_url}" alt="${product.name}" style="width:100%;height:160px;object-fit:cover;border-radius:12px;margin-bottom:8px;">` : '';
-        const adminControls = userRole === 'admin' || userRole === 'super_admin'
+        const adminControls = (userRole === 'admin' || userRole === 'super_admin' || userRole === 'assistant')
             ? `<div style="display:flex;gap:8px;margin-top:8px;">
                    <button onclick="setProductImage(${product.id})" class="secondary-btn" style="padding:6px 10px;">Set Image</button>
                    ${product.image_url ? `<button onclick="removeProductImage(${product.id})" class="secondary-btn danger" style="padding:6px 10px;">Remove</button>` : ''}
@@ -1246,8 +1372,10 @@ async function fetchCashierReport() {
 
 function refreshReports() {
     fetchDailyReport();
-    fetchCashierReport();
-    fetchPaymentMethodReport();
+    if (userRole === 'admin' || userRole === 'super_admin') {
+        fetchCashierReport();
+        fetchPaymentMethodReport();
+    }
 }
 
 // Payment Method Selection
@@ -1322,7 +1450,11 @@ window.createProduct = async function() {
         const result = await response.json();
         if (response.ok && result.message === 'success') {
             nameEl.value = '';
-            catEl.value = '';
+            if (catEl && typeof catEl.selectedIndex === 'number') {
+                catEl.selectedIndex = 0;
+            } else {
+                catEl.value = '';
+            }
             priceEl.value = '';
             stockEl.value = '';
             if (minEl) minEl.value = '';

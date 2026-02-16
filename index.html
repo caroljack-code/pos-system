@@ -70,6 +70,9 @@
                             <i class="fa-solid fa-barcode"></i>
                             <input type="text" id="barcode-input" placeholder="Scan barcode..." autocomplete="off">
                         </div>
+                        <div style="display:flex;justify-content:flex-end;margin-bottom:0.5rem;">
+                            <button onclick="toggleAdminPanel()" class="secondary-btn" style="padding:0.4rem 0.8rem;">Show/Hide Add Panel</button>
+                        </div>
                         <div id="product-admin-panel" style="display:none; background-color: var(--surface-color); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 1rem; margin-bottom: 1rem;">
                             <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom:0.75rem;">
                                 <strong>Add Product</strong>
@@ -77,12 +80,18 @@
                             </div>
                             <div style="display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:0.75rem;">
                                 <input id="admin-prod-name" type="text" placeholder="Name" style="padding:0.6rem; border:1px solid var(--border-color); border-radius:8px;">
-                                <input id="admin-prod-category" type="text" placeholder="Category" style="padding:0.6rem; border:1px solid var(--border-color); border-radius:8px;">
+                                <select id="admin-prod-category" style="padding:0.6rem; border:1px solid var(--border-color); border-radius:8px;">
+                                    <option value="">Select category</option>
+                                </select>
                                 <input id="admin-prod-price" type="number" step="0.01" placeholder="Price" style="padding:0.6rem; border:1px solid var(--border-color); border-radius:8px;">
                                 <input id="admin-prod-stock" type="number" placeholder="Stock" style="padding:0.6rem; border:1px solid var(--border-color); border-radius:8px;">
                                 <input id="admin-prod-minprice" type="number" step="0.01" placeholder="Min Price (optional)" style="padding:0.6rem; border:1px solid var(--border-color); border-radius:8px;">
                                 <input id="admin-prod-barcode" type="text" placeholder="Barcode (optional)" style="padding:0.6rem; border:1px solid var(--border-color); border-radius:8px;">
                                 <input id="admin-prod-image-file" type="file" accept="image/*" style="padding:0.4rem; border:1px solid var(--border-color); border-radius:8px;">
+                            </div>
+                            <div style="display:flex;gap:0.5rem;align-items:center;margin-top:0.5rem;">
+                                <input id="new-category-name" type="text" placeholder="New category (Admin only)" style="padding:0.6rem; border:1px solid var(--border-color); border-radius:8px;">
+                                <button onclick="addCategory()" class="secondary-btn" style="padding:0.5rem 0.8rem;">Add Category</button>
                             </div>
                             <p id="admin-prod-error" style="color: var(--danger-color); display:none; margin-top:0.5rem;"></p>
                         </div>
@@ -301,13 +310,19 @@
                 </header>
                 <div class="report-container">
                     <div class="report-card">
-                        <h3>Add Cashier</h3>
+                        <h3>Add User</h3>
                         <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0.75rem;margin-top:0.5rem;">
                             <input id="new-user-username" type="text" placeholder="Username" style="padding:0.6rem;border:1px solid var(--border-color);border-radius:8px;">
                             <input id="new-user-password" type="password" placeholder="Password" style="padding:0.6rem;border:1px solid var(--border-color);border-radius:8px;">
+                            <select id="new-user-role" style="padding:0.6rem;border:1px solid var(--border-color);border-radius:8px;">
+                                <option value="cashier" selected>Cashier</option>
+                                <option value="assistant">Admin Assistant</option>
+                                <option value="admin">Admin</option>
+                                <option value="super_admin">Super Admin</option>
+                            </select>
                         </div>
                         <div style="margin-top:0.75rem;">
-                            <button onclick="createUser()" class="primary-btn"><i class="fa-solid fa-user-plus"></i> Add Cashier</button>
+                            <button onclick="createUser()" class="primary-btn"><i class="fa-solid fa-user-plus"></i> Add User</button>
                             <p id="new-user-error" style="color: var(--danger-color); display:none; margin-top:0.5rem;"></p>
                         </div>
                     </div>
@@ -386,7 +401,9 @@
             </div>
             <button onclick="login()" class="primary-btn" style="width: 100%;">Sign In</button>
             <div style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-secondary);">
-                Default: admin / admin123 (Super Admin)<br>
+                Default accounts:<br>
+                superadmin / super123 (Super Admin)<br>
+                admin / admin123 (Admin)<br>
                 cashier / cashier123 (Cashier)
             </div>
         </div>

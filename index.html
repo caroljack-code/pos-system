@@ -49,7 +49,10 @@
                     <h2>New Sale</h2>
                     <div class="user-profile">
                         <span id="user-display-name">Cashier</span>
-                        <button onclick="logout()" class="secondary-btn" style="padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 6px; display: flex; align-items: center; gap: 0.4rem;">
+                        <button id="login-btn" onclick="showLoginModal()" class="secondary-btn" style="padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 6px; display: flex; align-items: center; gap: 0.4rem;">
+                            <i class="fa-solid fa-right-to-bracket"></i> Login
+                        </button>
+                        <button id="logout-btn" onclick="logout()" class="secondary-btn" style="padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 6px; display: flex; align-items: center; gap: 0.4rem;">
                             <i class="fa-solid fa-right-from-bracket"></i> Logout
                         </button>
                         <button onclick="setApiBase()" class="secondary-btn" style="padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 6px; display: flex; align-items: center; gap: 0.4rem;">
@@ -155,6 +158,10 @@
                                 <span>Total</span>
                                 <span id="cart-total">KES 0.00</span>
                             </div>
+                            <div class="summary-row" style="justify-content:flex-start;gap:0.5rem;">
+                                <button class="secondary-btn" onclick="pauseOrder()" title="Save current cart to resume later"><i class="fa-solid fa-pause"></i> Pause Order</button>
+                                <button class="secondary-btn" onclick="openHeldOrders()"><i class="fa-solid fa-clipboard-list"></i> Held Orders</button>
+                            </div>
                             <button id="checkout-btn" class="checkout-btn" disabled>
                                 <span>Checkout</span>
                                 <i class="fa-solid fa-arrow-right"></i>
@@ -183,6 +190,14 @@
                         <button onclick="downloadSalesCSV()" class="refresh-btn"><i class="fa-solid fa-file-csv"></i> Export Sales CSV</button>
                         <button onclick="downloadProductsCSV()" class="refresh-btn"><i class="fa-solid fa-file-csv"></i> Export Products CSV</button>
                     </div>
+                    <div class="report-card" style="margin-bottom:1rem;">
+                        <h3>Reprint Receipt</h3>
+                        <div style="display:flex;gap:0.5rem;align-items:center;">
+                            <input type="number" id="reprint-sale-id" placeholder="Enter Sale ID" style="padding:0.5rem;border:1px solid var(--border-color);border-radius:8px;max-width:200px;">
+                            <button onclick="reprintReceipt()" class="primary-btn"><i class="fa-solid fa-print"></i> Reprint</button>
+                            <span id="reprint-status" style="color:#64748b;"></span>
+                        </div>
+                    </div>
                     <div class="report-card">
                         <h3>Sales History</h3>
                         <button onclick="fetchDailyReport()" class="refresh-btn"><i class="fa-solid fa-sync"></i> Refresh</button>
@@ -199,6 +214,28 @@
                             <tbody id="daily-sales-body">
                                 <!-- Report data here -->
                             </tbody>
+                        </table>
+                    </div>
+                    <div class="report-card" style="margin-top:1rem;">
+                        <h3>Recent Sales</h3>
+                        <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;">
+                            <input type="text" id="recent-q" placeholder="Search by cashier or reference" style="padding:0.5rem;border:1px solid var(--border-color);border-radius:8px;max-width:280px;">
+                            <button onclick="fetchRecentSales()" class="refresh-btn"><i class="fa-solid fa-search"></i> Search</button>
+                            <span id="recent-status" style="color:#64748b;"></span>
+                        </div>
+                        <table class="report-table">
+                            <thead>
+                                <tr>
+                                    <th>ID</th>
+                                    <th>Date</th>
+                                    <th>Cashier</th>
+                                    <th>Pay Method</th>
+                                    <th>Reference</th>
+                                    <th>Total</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="recent-sales-body"></tbody>
                         </table>
                     </div>
                     <div class="report-card" style="margin-top:1rem;">
@@ -224,6 +261,7 @@
                                 <option value="weekly">Weekly</option>
                                 <option value="monthly" selected>Monthly</option>
                                 <option value="annual">Annual</option>
+                                <option value="daily">Daily</option>
                             </select>
                             <button onclick="fetchPaymentMethodReport()" class="refresh-btn"><i class="fa-solid fa-sync"></i> Refresh</button>
                         </div>
@@ -274,6 +312,29 @@
                             </thead>
                             <tbody id="inventory-body">
                             </tbody>
+                        </table>
+                    </div>
+                    <div class="report-card" style="margin-top:1rem;">
+                        <h3>Items Sold</h3>
+                        <div style="display:flex;gap:0.75rem;align-items:center;margin-bottom:0.5rem;">
+                            <label style="font-size:0.9rem;color:#64748b;">Period</label>
+                            <select id="items-period" style="padding:0.5rem;border:1px solid var(--border-color);border-radius:8px;">
+                                <option value="daily" selected>Daily (Today)</option>
+                                <option value="weekly">Weekly (Last 7 days)</option>
+                                <option value="monthly">Monthly (This month)</option>
+                            </select>
+                            <button onclick="fetchItemsReport()" class="refresh-btn"><i class="fa-solid fa-sync"></i> Refresh</button>
+                        </div>
+                        <table class="report-table">
+                            <thead>
+                                <tr>
+                                    <th>Period</th>
+                                    <th>Item</th>
+                                    <th>Units Sold</th>
+                                    <th>Revenue</th>
+                                </tr>
+                            </thead>
+                            <tbody id="items-report-body"></tbody>
                         </table>
                     </div>
                 </div>
@@ -373,6 +434,49 @@
         </main>
     </div>
     
+    <!-- Variants Modal -->
+    <div id="variants-modal" class="modal" style="display:none;">
+        <div class="modal-content" style="max-width: 800px;">
+            <div class="receipt-header" style="display:flex;justify-content:space-between;align-items:center;">
+                <div>
+                    <h2 id="variants-title">Add Variants</h2>
+                    <p>Add color/size and optional price/stock/barcode for each row</p>
+                </div>
+                <button class="close-holds" onclick="closeVariants()" title="Close" style="border:none;background:none;font-size:1.25rem;"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+            <div>
+                <table class="report-table">
+                    <thead>
+                        <tr>
+                            <th>Color</th>
+                            <th>Size</th>
+                            <th>Price</th>
+                            <th>Stock</th>
+                            <th>Barcode</th>
+                            <th>Min Price</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="variants-rows"></tbody>
+                </table>
+                <div style="display:flex;gap:0.5rem;margin-top:0.75rem;">
+                    <button class="secondary-btn" onclick="addVariantRow()"><i class="fa-solid fa-plus"></i> Add Row</button>
+                    <button class="primary-btn" onclick="saveVariants()"><i class="fa-solid fa-save"></i> Save Variants</button>
+                    <span id="variants-status" style="align-self:center;color:#64748b;"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Mobile Bottom Navigation -->
+    <div id="mobile-bottom-nav" class="mobile-bottom-nav" style="display:none;">
+        <button data-tab="pos" onclick="switchTab('pos')"><i class="fa-solid fa-cash-register"></i><span>POS</span></button>
+        <button data-tab="reports" onclick="switchTab('reports')"><i class="fa-solid fa-chart-line"></i><span>Reports</span></button>
+        <button data-tab="inventory" onclick="switchTab('inventory')"><i class="fa-solid fa-boxes-stacked"></i><span>Inventory</span></button>
+        <button data-tab="users" onclick="switchTab('users')"><i class="fa-solid fa-users"></i><span>Users</span></button>
+        <button data-tab="backups" onclick="switchTab('backups')"><i class="fa-solid fa-database"></i><span>Backups</span></button>
+    </div>
+    
     <!-- Login Modal -->
     <div id="login-modal" class="modal" style="display: block;">
         <div class="modal-content" style="max-width: 400px; text-align: center;">
@@ -423,6 +527,31 @@
                 <button onclick="closeReceipt()" class="secondary-btn">Close</button>
                 <button onclick="window.print()" class="primary-btn"><i class="fa-solid fa-print"></i> Print Receipt</button>
             </div>
+        </div>
+    </div>
+
+    <!-- Held Orders Modal -->
+    <div id="holds-modal" class="modal" style="display:none;">
+        <div class="modal-content" style="max-width:700px;">
+            <span class="close-holds" style="float:right;cursor:pointer;">&times;</span>
+            <h3>Held Orders</h3>
+            <div style="margin:0.5rem 0;">
+                <button class="secondary-btn" onclick="refreshHeldOrders()"><i class="fa-solid fa-rotate"></i> Refresh</button>
+                <span id="holds-status" style="margin-left:0.5rem;color:#64748b;"></span>
+            </div>
+            <table class="report-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Date</th>
+                        <th>Cashier</th>
+                        <th>Note</th>
+                        <th>Total</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="holds-body"></tbody>
+            </table>
         </div>
     </div>
 

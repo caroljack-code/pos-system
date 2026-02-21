@@ -75,6 +75,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS products (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
+            parent_id INTEGER,
             price REAL NOT NULL,
             stock INTEGER NOT NULL,
             category TEXT,
@@ -85,6 +86,8 @@ def init_db():
         )
     ''')
     cols = [row['name'] for row in cursor.execute("PRAGMA table_info(products)").fetchall()]
+    if 'parent_id' not in cols:
+        cursor.execute("ALTER TABLE products ADD COLUMN parent_id INTEGER")
     if 'barcode' not in cols:
         cursor.execute("ALTER TABLE products ADD COLUMN barcode TEXT")
     if 'low_stock_threshold' not in cols:
@@ -269,11 +272,6 @@ def role_required(allowed_roles):
                  return jsonify({'message': 'User not authenticated'}), 401
             
             user_role = request.current_user['role']
-            
-            # Super admin has all access
-            if user_role == 'super_admin':
-                return f(*args, **kwargs)
-            
             if user_role not in allowed_roles:
                 return jsonify({'message': 'Permission denied'}), 403
                 
@@ -356,6 +354,108 @@ def serve_static(path):
 @app.route('/api/ping', methods=['GET'])
 def ping():
     return jsonify({"message": "pong"})
+
+# --- Held Orders (Pause/Resume) ---
+def ensure_holds_table():
+    conn = get_db_connection()
+    try:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS holds (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT DEFAULT CURRENT_TIMESTAMP,
+                cashier TEXT,
+                note TEXT,
+                items TEXT NOT NULL,
+                payment_method TEXT,
+                payment_reference TEXT,
+                subtotal REAL,
+                vat REAL,
+                total REAL
+            )
+        ''')
+        conn.commit()
+    finally:
+        conn.close()
+ensure_holds_table()
+
+@app.route('/api/holds', methods=['GET'])
+@token_required
+@role_required(['cashier', 'admin', 'assistant', 'super_admin'])
+def list_holds():
+    mine = request.args.get('mine', '1') != '0'
+    conn = get_db_connection()
+    try:
+        if mine and request.current_user:
+            rows = conn.execute("SELECT id, date, cashier, note, subtotal, vat, total FROM holds WHERE cashier = ? ORDER BY date DESC", (request.current_user['username'],)).fetchall()
+        else:
+            rows = conn.execute("SELECT id, date, cashier, note, subtotal, vat, total FROM holds ORDER BY date DESC").fetchall()
+        return jsonify({"message": "success", "data": [dict(ix) for ix in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+@app.route('/api/holds', methods=['POST'])
+@token_required
+@role_required(['cashier', 'admin', 'assistant', 'super_admin'])
+def create_hold():
+    data = request.get_json() or {}
+    items = data.get('items') or []
+    if not isinstance(items, list) or len(items) == 0:
+        return jsonify({"error": "items required"}), 400
+    note = (data.get('note') or '').strip()
+    payment_method = data.get('payment_method')
+    payment_reference = data.get('payment_reference')
+    subtotal = float(data.get('subtotal') or 0)
+    vat = float(data.get('vat') or 0)
+    total = float(data.get('total') or 0)
+    cashier = request.current_user['username'] if request.current_user else None
+    conn = get_db_connection()
+    try:
+        cur = conn.execute("""
+            INSERT INTO holds (cashier, note, items, payment_method, payment_reference, subtotal, vat, total)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (cashier, note, json.dumps(items), payment_method, payment_reference, subtotal, vat, total))
+        conn.commit()
+        return jsonify({"message": "success", "id": cur.lastrowid})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+@app.route('/api/holds/<int:hold_id>', methods=['GET'])
+@token_required
+@role_required(['cashier', 'admin', 'assistant', 'super_admin'])
+def get_hold(hold_id):
+    conn = get_db_connection()
+    try:
+        row = conn.execute("SELECT * FROM holds WHERE id = ?", (hold_id,)).fetchone()
+        if not row:
+            return jsonify({"error": "not found"}), 404
+        d = dict(row)
+        try:
+            d['items'] = json.loads(d.get('items') or '[]')
+        except Exception:
+            d['items'] = []
+        return jsonify({"message": "success", "data": d})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
+
+@app.route('/api/holds/<int:hold_id>', methods=['DELETE'])
+@token_required
+@role_required(['cashier', 'admin', 'assistant', 'super_admin'])
+def delete_hold(hold_id):
+    conn = get_db_connection()
+    try:
+        conn.execute("DELETE FROM holds WHERE id = ?", (hold_id,))
+        conn.commit()
+        return jsonify({"message": "success"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
 
 def get_mpesa_config():
     cfg = {
@@ -536,7 +636,6 @@ def add_category():
 @app.route('/products', methods=['GET'])
 @app.route('/api/products', methods=['GET']) # Alias for frontend compatibility
 @token_required
-@role_required(['admin', 'cashier', 'assistant'])
 def get_products():
     conn = get_db_connection()
     products = conn.execute('SELECT * FROM products').fetchall()
@@ -552,7 +651,6 @@ def get_products():
 @app.route('/products/barcode/<barcode>', methods=['GET'])
 @app.route('/api/products/barcode/<barcode>', methods=['GET'])
 @token_required
-@role_required(['admin', 'cashier', 'assistant'])
 def get_product_by_barcode(barcode):
     conn = get_db_connection()
     product = conn.execute('SELECT * FROM products WHERE barcode = ?', (barcode,)).fetchone()
@@ -560,6 +658,22 @@ def get_product_by_barcode(barcode):
     if product:
         return jsonify({"message": "success", "data": dict(product)})
     return jsonify({"error": "Product not found"}), 404
+
+# POS-friendly products endpoint (explicitly allows all authenticated roles)
+@app.route('/pos/products', methods=['GET'])
+@app.route('/api/pos/products', methods=['GET'])
+@token_required
+def get_products_for_pos():
+    conn = get_db_connection()
+    products = conn.execute('SELECT * FROM products').fetchall()
+    conn.close()
+    data = []
+    for ix in products:
+        d = dict(ix)
+        thr = d.get('low_stock_threshold')
+        d['low_stock'] = thr is not None and d.get('stock', 0) <= int(thr)
+        data.append(d)
+    return jsonify({"message": "success", "data": data})
 
 @app.route('/uploads/products/<path:filename>')
 def serve_product_upload(filename):
@@ -619,6 +733,53 @@ def create_product():
         return jsonify({"error": str(e)}), 400
     finally:
         conn.close()
+
+@app.route('/api/products/<int:product_id>/variants', methods=['POST', 'OPTIONS'])
+@app.route('/api/products/<int:product_id>/variants/', methods=['POST', 'OPTIONS'])
+@app.route('/products/<int:product_id>/variants', methods=['POST', 'OPTIONS'])
+@app.route('/products/<int:product_id>/variants/', methods=['POST', 'OPTIONS'])
+@token_required
+@role_required(['admin', 'assistant', 'super_admin'])
+def create_variants(product_id):
+    # Handle preflight/OPTIONS quickly
+    if request.method == 'OPTIONS':
+        return jsonify({"message": "ok"}), 200
+    data = request.get_json() or {}
+    variants = data.get('variants') or []
+    if not isinstance(variants, list) or not variants:
+        return jsonify({"error": "variants list required"}), 400
+    conn = get_db_connection()
+    try:
+        parent = conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+        if not parent:
+            return jsonify({"error": "Parent product not found"}), 404
+        cursor = conn.cursor()
+        created_ids = []
+        for v in variants:
+            color = (v.get('color') or '').strip()
+            size = (v.get('size') or '').strip()
+            name_suffix = " ".join([s for s in [size, color] if s]).strip()
+            child_name = parent['name'] + (f" ({name_suffix})" if name_suffix else "")
+            price = v.get('price', parent['price'])
+            stock = v.get('stock', 0)
+            barcode = (v.get('barcode') or '').strip() or None
+            min_price = v.get('min_price', parent['min_price'])
+            cursor.execute(
+                "INSERT INTO products (name, parent_id, price, stock, category, barcode, low_stock_threshold, image_url, min_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (child_name, parent['id'], float(price), int(stock), parent['category'], barcode, parent['low_stock_threshold'], parent['image_url'], float(min_price) if min_price is not None else None)
+            )
+            created_ids.append(cursor.lastrowid)
+        conn.commit()
+        return jsonify({"message": "success", "ids": created_ids})
+    except sqlite3.IntegrityError as e:
+        err = str(e)
+        if 'idx_products_barcode' in err or 'UNIQUE' in err:
+            return jsonify({"error": "Barcode already exists"}), 400
+        return jsonify({"error": err}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    finally:
+        conn.close()
 @app.route('/api/users', methods=['GET'])
 @token_required
 @role_required(['admin'])
@@ -637,7 +798,7 @@ def list_users():
         conn.close()
 @app.route('/api/users', methods=['POST'])
 @token_required
-@role_required(['admin'])
+@role_required_strict(['admin'])
 def create_user():
     data = request.get_json() or {}
     username = (data.get('username') or '').strip()
@@ -767,7 +928,7 @@ def get_brand_logo():
 @app.route('/sale', methods=['POST'])
 @app.route('/api/sales', methods=['POST']) # Alias for frontend compatibility
 @token_required
-@role_required(['cashier', 'admin'])
+@role_required(['cashier', 'admin', 'super_admin'])
 def create_sale():
     data = request.get_json()
     items = data.get('items') # List of {productId, quantity, price}
@@ -834,6 +995,30 @@ def create_sale():
     finally:
         conn.close()
 
+@app.route('/api/sales/<int:sale_id>', methods=['GET'])
+@token_required
+@role_required(['cashier', 'admin', 'assistant', 'super_admin'])
+def get_sale(sale_id):
+    conn = get_db_connection()
+    try:
+        sale = conn.execute("SELECT id, date, cashier, payment_method, payment_reference, subtotal, vat, total, status FROM sales WHERE id = ?", (sale_id,)).fetchone()
+        if not sale:
+            return jsonify({"error": "Sale not found"}), 404
+        items = conn.execute("""
+            SELECT si.product_id, si.quantity, si.price, COALESCE(p.name, '') as name
+            FROM sale_items si
+            LEFT JOIN products p ON si.product_id = p.id
+            WHERE si.sale_id = ?
+        """, (sale_id,)).fetchall()
+        return jsonify({
+            "message": "success",
+            "sale": dict(sale),
+            "items": [dict(ix) for ix in items]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 @app.route('/api/sales/<int:sale_id>/refund', methods=['POST'])
 @token_required
 @role_required(['admin'])
@@ -865,6 +1050,43 @@ def refund_sale(sale_id):
     finally:
         conn.close()
 
+@app.route('/api/sales/recent', methods=['GET'])
+@token_required
+@role_required(['cashier', 'admin', 'assistant', 'super_admin'])
+def recent_sales():
+    start = request.args.get('start')
+    end = request.args.get('end')
+    q = (request.args.get('q') or '').strip()
+    try:
+        limit = int(request.args.get('limit', '50'))
+    except Exception:
+        limit = 50
+    limit = max(1, min(limit, 200))
+    conn = get_db_connection()
+    try:
+        base = """
+            SELECT id, date, cashier, payment_method, payment_reference, subtotal, vat, total, status
+            FROM sales
+        """
+        params = []
+        where = []
+        if start and end:
+            where.append("DATE(date) BETWEEN ? AND ?")
+            params.extend([start, end])
+        if q:
+            where.append("(CAST(id AS TEXT) LIKE ? OR cashier LIKE ? OR payment_reference LIKE ?)")
+            like = f"%{q}%"
+            params.extend([like, like, like])
+        if where:
+            base += " WHERE " + " AND ".join(where)
+        base += " ORDER BY date DESC LIMIT ?"
+        params.append(limit)
+        rows = conn.execute(base, tuple(params)).fetchall()
+        return jsonify({"message": "success", "data": [dict(ix) for ix in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 @app.route('/api/sales/<int:sale_id>/void', methods=['POST'])
 @token_required
 @role_required(['admin'])
@@ -1055,7 +1277,7 @@ def get_daily_sales():
 
 @app.route('/api/reports/daily', methods=['GET'])
 @token_required
-@role_required(['admin', 'assistant'])
+@role_required(['admin', 'assistant', 'super_admin'])
 def report_daily():
     start = request.args.get('start')
     end = request.args.get('end')
@@ -1084,7 +1306,7 @@ def report_daily():
 
 @app.route('/api/reports/cashier', methods=['GET'])
 @token_required
-@role_required(['admin'])
+@role_required(['admin', 'super_admin'])
 def report_by_cashier():
     start = request.args.get('start')
     end = request.args.get('end')
@@ -1111,16 +1333,71 @@ def report_by_cashier():
     finally:
         conn.close()
 
+@app.route('/api/reports/items', methods=['GET'])
+@token_required
+@role_required(['admin', 'assistant', 'super_admin'])
+def report_items_daily():
+    period = (request.args.get('period') or 'daily').lower()
+    start = request.args.get('start')
+    end = request.args.get('end')
+    conn = get_db_connection()
+    try:
+        if period not in ('daily', 'weekly', 'monthly'):
+            return jsonify({"error": "Invalid period"}), 400
+        if period == 'daily':
+            label = "DATE(s.date)"
+        elif period == 'weekly':
+            label = "strftime('%Y-W%W', s.date)"
+        else:
+            label = "strftime('%Y-%m', s.date)"
+        base = f"""
+            SELECT {label} AS period_label,
+                   COALESCE(p.name, 'Unknown') AS item_name,
+                   SUM(si.quantity) AS units_sold,
+                   SUM(si.quantity * si.price) AS revenue
+            FROM sale_items si
+            JOIN sales s ON si.sale_id = s.id
+            LEFT JOIN products p ON si.product_id = p.id
+        """
+        params = []
+        where = []
+        if start and end:
+            where.append("DATE(s.date) BETWEEN ? AND ?")
+            params.extend([start, end])
+        else:
+            if period == 'daily':
+                where.append("DATE(s.date) = DATE('now','localtime')")
+            elif period == 'weekly':
+                where.append("DATE(s.date) >= DATE('now','-6 days','localtime')")
+            else:
+                where.append("strftime('%Y-%m', s.date) = strftime('%Y-%m','now','localtime')")
+        if where:
+            base += " WHERE " + " AND ".join(where)
+        base += " GROUP BY period_label, item_name ORDER BY period_label DESC, units_sold DESC"
+        rows = conn.execute(base, tuple(params)).fetchall()
+        return jsonify({"message": "success", "data": [dict(ix) for ix in rows]})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 @app.route('/api/reports/payment_methods', methods=['GET'])
 @token_required
-@role_required(['admin'])
+@role_required_strict(['admin', 'super_admin'])
 def report_payment_methods():
     period = (request.args.get('period') or 'monthly').lower()
     start = request.args.get('start')
     end = request.args.get('end')
-    if period not in ('weekly', 'monthly', 'annual'):
+    # Allow daily now
+    if period not in ('daily', 'weekly', 'monthly', 'annual'):
         return jsonify({"error": "Invalid period"}), 400
-    if period == 'weekly':
+    # Enforce super_admin restriction: only daily or weekly
+    user_role = request.current_user['role']
+    if user_role == 'super_admin' and period not in ('daily', 'weekly'):
+        return jsonify({"error": "Forbidden: super_admin limited to daily or weekly"}), 403
+    if period == 'daily':
+        label = "DATE(date)"
+    elif period == 'weekly':
         label = "strftime('%Y-W%W', date)"
     elif period == 'monthly':
         label = "strftime('%Y-%m', date)"

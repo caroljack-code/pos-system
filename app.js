@@ -33,11 +33,11 @@ try {
 } catch (e) { /* ignore */ }
 
 if (apiIndicator) {
-    apiIndicator.textContent = API_BASE ? ('API: ' + API_BASE) : 'API: not set';
+    apiIndicator.textContent = API_BASE ? ('API: ' + API_BASE) : 'API: same origin';
 }
 const loginApiIndicator = document.getElementById('login-api-indicator');
 if (loginApiIndicator) {
-    loginApiIndicator.textContent = API_BASE ? ('API: ' + API_BASE) : 'API: not set';
+    loginApiIndicator.textContent = API_BASE ? ('API: ' + API_BASE) : 'API: same origin';
 }
 let userRole = localStorage.getItem('pos_role');
 let userName = localStorage.getItem('pos_username');
@@ -63,6 +63,11 @@ const mpesaPhoneRow = document.getElementById('mpesa-phone-row');
 const mpesaPhoneEl = document.getElementById('mpesa-phone');
 const mpesaStatusRow = document.getElementById('mpesa-status-row');
 const mpesaStatusEl = document.getElementById('mpesa-status');
+const loginBtnEl = document.getElementById('login-btn');
+const logoutBtnEl = document.getElementById('logout-btn');
+const holdsModal = document.getElementById('holds-modal');
+const holdsBody = document.getElementById('holds-body');
+const holdsStatus = document.getElementById('holds-status');
 
 // --- Auth Functions ---
 window.logout = function() {
@@ -74,6 +79,14 @@ window.logout = function() {
         localStorage.removeItem('pos_role');
         localStorage.removeItem('pos_username');
         window.location.reload();
+    }
+};
+
+window.showLoginModal = function() {
+    if (loginModal) {
+        loginModal.style.display = 'block';
+        const u = document.getElementById('login-username');
+        if (u) setTimeout(() => u.focus(), 50);
     }
 };
 
@@ -131,6 +144,8 @@ async function login() {
             setupRoleUI();
             fetchProducts();
             fetchCategories();
+            if (loginBtnEl) loginBtnEl.style.display = 'none';
+            if (logoutBtnEl) logoutBtnEl.style.display = '';
         } else {
             errorEl.textContent = result.message || 'Login failed';
             errorEl.style.display = 'block';
@@ -140,6 +155,8 @@ async function login() {
         errorEl.style.display = 'block';
     }
 }
+// Expose for onclick handlers
+window.login = login;
 
 // Check auth on load
 if (authToken) {
@@ -149,6 +166,8 @@ if (authToken) {
         const userDisplay = document.getElementById('user-display-name') || document.querySelector('.user-profile span');
         if (userDisplay) userDisplay.textContent = userName + ' (' + userRole + ')';
     }
+    if (loginBtnEl) loginBtnEl.style.display = 'none';
+    if (logoutBtnEl) logoutBtnEl.style.display = '';
     setupRoleUI();
     fetchProducts();
     fetchCategories();
@@ -169,6 +188,8 @@ if (authToken) {
     }
 } else {
     loginModal.style.display = 'block';
+    if (loginBtnEl) loginBtnEl.style.display = '';
+    if (logoutBtnEl) logoutBtnEl.style.display = 'none';
     loadBrandLogo();
 }
 
@@ -250,7 +271,8 @@ function getAllowedTabs(role) {
     if (role === 'cashier') return ['pos'];
     if (role === 'assistant') return ['pos', 'reports'];
     if (role === 'admin') return ['pos', 'reports', 'inventory', 'users'];
-    return ['pos', 'reports', 'backups', 'inventory', 'users'];
+    // super_admin: no users or inventory
+    return ['pos', 'reports', 'backups'];
 }
 
 function setupRoleUI() {
@@ -262,7 +284,7 @@ function setupRoleUI() {
     const users = document.getElementById('nav-users');
     const adminPanel = document.getElementById('product-admin-panel');
     if (reports) reports.style.display = allowed.includes('reports') ? '' : 'none';
-    if (inventory) inventory.style.display = (role === 'cashier' || role === 'assistant') ? 'none' : '';
+    if (inventory) inventory.style.display = allowed.includes('inventory') ? '' : 'none';
     if (backups) backups.style.display = allowed.includes('backups') ? '' : 'none';
     if (users) users.style.display = allowed.includes('users') ? '' : 'none';
     if (adminPanel) {
@@ -273,6 +295,23 @@ function setupRoleUI() {
     const pmCard = document.querySelector('#reports-view .report-card:nth-of-type(3)');
     if (cashierCard) cashierCard.style.display = (role === 'admin' || role === 'super_admin') ? '' : 'none';
     if (pmCard) pmCard.style.display = (role === 'admin' || role === 'super_admin') ? '' : 'none';
+    // Restrict payment method period options for super_admin
+    const pmSel = document.getElementById('pm-period');
+    if (pmSel) {
+        if (role === 'super_admin') {
+            pmSel.innerHTML = `
+                <option value="daily" selected>Daily (Today)</option>
+                <option value="weekly">Weekly (Last 7 days)</option>
+            `;
+        } else {
+            pmSel.innerHTML = `
+                <option value="weekly" selected>Weekly (Last 7 days)</option>
+                <option value="monthly">Monthly (This month)</option>
+                <option value="annual">Annual (This year)</option>
+                <option value="daily">Daily (Today)</option>
+            `;
+        }
+    }
     const addBankBtn = document.querySelector('button[onclick="addBank()"]');
     const newBankInput = document.getElementById('new-bank-name');
     const banksCard = newBankInput ? newBankInput.closest('.report-card') : null;
@@ -385,6 +424,7 @@ window.switchTab = function(tabName) {
         document.getElementById('pos-view').style.display = 'flex';
         document.getElementById('pos-view').classList.add('active');
         document.querySelector('.nav-links li:nth-child(1)').classList.add('active');
+        fetchProducts();
         if (barcodeInput) {
             barcodeInput.focus();
         }
@@ -412,8 +452,107 @@ window.switchTab = function(tabName) {
         fetchUsers();
         fetchBanksAdmin();
     }
+    document.querySelectorAll('#mobile-bottom-nav button').forEach(btn => {
+        // Hide buttons not allowed for role
+        btn.style.display = allowed.includes(btn.dataset.tab) ? '' : 'none';
+        if (btn.dataset.tab === tabName) btn.classList.add('active');
+        else btn.classList.remove('active');
+    });
 };
 
+window.reprintReceipt = async function(passedId) {
+    const idEl = document.getElementById('reprint-sale-id');
+    const statusEl = document.getElementById('reprint-status');
+    const id = Number.isFinite(passedId) && passedId > 0
+        ? parseInt(passedId, 10)
+        : (idEl && idEl.value ? parseInt(idEl.value, 10) : NaN);
+    if (Number.isNaN(id) || id <= 0) {
+        if (statusEl) statusEl.textContent = 'Enter a valid Sale ID';
+        return;
+    }
+    if (statusEl) statusEl.textContent = 'Loading...';
+    try {
+        const response = await apiCall(`/api/sales/${id}`);
+        const result = await response.json();
+        if (response.ok && result.message === 'success') {
+            const sale = result.sale;
+            const items = (result.items || []).map(it => ({
+                name: it.name || '',
+                price: Number(it.price || 0),
+                quantity: Number(it.quantity || 0)
+            }));
+            showReceipt(sale.id, items, Number(sale.subtotal || 0), Number(sale.vat || 0), Number(sale.total || 0), sale.payment_method, sale.payment_reference, sale.date, sale.cashier);
+            switchTab('pos');
+            setTimeout(() => { try { window.print(); } catch {} }, 300);
+            if (statusEl) statusEl.textContent = '';
+        } else {
+            if (statusEl) statusEl.textContent = result.error || 'Sale not found';
+        }
+    } catch (e) {
+        if (statusEl) statusEl.textContent = 'Connection error';
+    }
+};
+
+async function fetchRecentSales() {
+    const qEl = document.getElementById('recent-q');
+    const statusEl = document.getElementById('recent-status');
+    const tbody = document.getElementById('recent-sales-body');
+    if (!tbody) return;
+    const startEl = document.getElementById('report-start');
+    const endEl = document.getElementById('report-end');
+    const q = qEl && qEl.value ? qEl.value.trim() : '';
+    const start = startEl && startEl.value ? startEl.value : '';
+    const end = endEl && endEl.value ? endEl.value : '';
+    const qs = [];
+    if (q) qs.push('q=' + encodeURIComponent(q));
+    if (start && end) {
+        qs.push('start=' + encodeURIComponent(start));
+        qs.push('end=' + encodeURIComponent(end));
+    }
+    const url = '/api/sales/recent' + (qs.length ? ('?' + qs.join('&')) : '');
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">Loading...</td></tr>';
+    statusEl && (statusEl.textContent = '');
+    try {
+        const response = await apiCall(url, { allow401: true });
+        let result;
+        try { 
+            result = await response.json(); 
+        } catch (e) { 
+            const text = await response.text(); 
+            result = { error: text }; 
+        }
+        if (response.status === 401) {
+            tbody.innerHTML = '<tr><td colspan="4" style="color:red;">Please login to view this report</td></tr>';
+            if (loginModal) loginModal.style.display = 'block';
+            return;
+        }
+        if (response.ok && result.message === 'success') {
+            const rows = result.data || [];
+            if (rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;">No sales found</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(r => `
+                <tr>
+                    <td>#${r.id}</td>
+                    <td>${r.date}</td>
+                    <td>${r.cashier || ''}</td>
+                    <td>${r.payment_method || ''}</td>
+                    <td>${r.payment_reference || ''}</td>
+                    <td>KES ${Number(r.total || 0).toLocaleString()}</td>
+                    <td><button class="secondary-btn" onclick="reprintReceipt(${r.id})"><i class="fa-solid fa-print"></i> Reprint</button></td>
+                </tr>
+            `).join('');
+            statusEl && (statusEl.textContent = rows.length + ' sales');
+        } else {
+            tbody.innerHTML = '<tr><td colspan="7" style="color:red;">Failed to load</td></tr>';
+            statusEl && (statusEl.textContent = result.error || '');
+        }
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="7" style="color:red;">Connection error</td></tr>';
+        statusEl && (statusEl.textContent = 'Connection error');
+    }
+}
 // --- Inventory Management ---
 async function fetchInventory() {
     try {
@@ -697,14 +836,20 @@ window.changeMyPassword = async function() {
 // Fetch products from API
 async function fetchProducts() {
     try {
-        const response = await apiCall('/api/products');
+        let response = await apiCall('/api/pos/products');
+        if (!response || response.status === 404 || response.status === 405) {
+            response = await apiCall('/api/products');
+        }
         const result = await response.json();
-        if (result.message === 'success') {
+        if (response.ok && result.message === 'success') {
             products = result.data;
             renderProducts(products);
             if (userRole === 'admin') {
                 fetchLowStockAlerts();
             }
+        } else {
+            const msg = result.error || result.message || `HTTP ${response.status}`;
+            productsListEl.innerHTML = `<p class="error">Failed to load products: ${msg}</p>`;
         }
     } catch (error) {
         console.error('Error fetching products:', error);
@@ -726,6 +871,7 @@ function renderProducts(productsToRender) {
             ? `<div style="display:flex;gap:8px;margin-top:8px;">
                    <button onclick="setProductImage(${product.id})" class="secondary-btn" style="padding:6px 10px;">Set Image</button>
                    ${product.image_url ? `<button onclick="removeProductImage(${product.id})" class="secondary-btn danger" style="padding:6px 10px;">Remove</button>` : ''}
+                   <button onclick="openVariants(${product.id}, '${String(product.name).replace(/'/g, "\\'")}')" class="secondary-btn" style="padding:6px 10px;">Variants</button>
                </div>`
             : '';
         productCard.innerHTML = `
@@ -733,7 +879,7 @@ function renderProducts(productsToRender) {
             ${imgHtml}
             <h3>${product.name}</h3>
             <p class="category">${product.category}</p>
-            <p class="price">KES ${product.price.toLocaleString()}${product.min_price != null ? ` • Min KES ${Number(product.min_price).toLocaleString()}` : ''}</p>
+            <p class="price">KES ${product.price.toLocaleString()}</p>
             <p class="stock">Stock: ${product.stock}</p>
             <button onclick="addToCart(${product.id})" ${product.stock === 0 ? 'disabled' : ''}>
                 ${product.stock === 0 ? 'Out of Stock' : '<i class="fa-solid fa-cart-plus"></i> Add to Cart'}
@@ -744,6 +890,260 @@ function renderProducts(productsToRender) {
     });
     ensureBarcodeFocus();
 }
+
+// ----- Variants -----
+window.openVariants = function(productId, productName) {
+    const modal = document.getElementById('variants-modal');
+    const title = document.getElementById('variants-title');
+    const tbody = document.getElementById('variants-rows');
+    if (!modal || !tbody) return;
+    modal.dataset.productId = String(productId);
+    if (title) title.textContent = `Add Variants for ${productName}`;
+    tbody.innerHTML = '';
+    addVariantRow();
+    modal.style.display = 'block';
+};
+
+window.addVariantRow = function() {
+    const tbody = document.getElementById('variants-rows');
+    if (!tbody) return;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+        <td><input type="text" placeholder="Color" style="width:100%;padding:6px;border:1px solid var(--border-color);border-radius:6px;"></td>
+        <td><input type="text" placeholder="Size" style="width:100%;padding:6px;border:1px solid var(--border-color);border-radius:6px;"></td>
+        <td><input type="number" step="0.01" placeholder="Price" style="width:100%;padding:6px;border:1px solid var(--border-color);border-radius:6px;"></td>
+        <td><input type="number" placeholder="Stock" style="width:100%;padding:6px;border:1px solid var(--border-color);border-radius:6px;"></td>
+        <td><input type="text" placeholder="Barcode" style="width:100%;padding:6px;border:1px solid var(--border-color);border-radius:6px;"></td>
+        <td><input type="number" step="0.01" placeholder="Min Price" style="width:100%;padding:6px;border:1px solid var(--border-color);border-radius:6px;"></td>
+        <td><button class="secondary-btn danger" onclick="this.closest('tr').remove()">Remove</button></td>
+    `;
+    tbody.appendChild(tr);
+};
+
+window.saveVariants = async function() {
+    const modal = document.getElementById('variants-modal');
+    const tbody = document.getElementById('variants-rows');
+    const status = document.getElementById('variants-status');
+    if (!modal || !tbody) return;
+    const productId = Number(modal.dataset.productId);
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const variants = rows.map(tr => {
+        const [color,size,price,stock,barcode,minp] = Array.from(tr.querySelectorAll('input')).map(i => i.value);
+        const o = { color, size };
+        if (price) o.price = Number(price);
+        if (stock) o.stock = Number(stock);
+        if (barcode) o.barcode = barcode;
+        if (minp) o.min_price = Number(minp);
+        return o;
+    }).filter(v => (v.color || v.size));
+    if (variants.length === 0) { alert('Add at least one row'); return; }
+    status.textContent = 'Saving...';
+    try {
+        let response = await apiCall(`/api/products/${productId}/variants`, {
+            method: 'POST',
+            body: JSON.stringify({ variants }),
+            allow401: true
+        });
+        // If network failed or route/method mismatch (404/405), fallback to non-API alias
+        if (!response || response.status === 404 || response.status === 405) {
+            response = await fetch(`/products/${productId}/variants`, {
+                method: 'POST',
+                headers: authToken ? { 'Authorization': `Bearer ${authToken}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ variants })
+            });
+        }
+        // Safely parse JSON or fall back to text (avoid double-read error)
+        let result;
+        try { 
+            result = await response.json(); 
+        } catch (e) { 
+            try {
+                const text = await response.clone().text();
+                result = { error: text || (`HTTP ${response.status}`) };
+            } catch {
+                result = { error: `HTTP ${response.status}` };
+            }
+        }
+        if (response.status === 401) {
+            status.textContent = 'Please login';
+            if (loginModal) loginModal.style.display = 'block';
+            return;
+        }
+        if (!response.ok || result.message !== 'success') {
+            status.textContent = result.error || 'Failed';
+            return;
+        }
+        status.textContent = 'Saved';
+        modal.style.display = 'none';
+        fetchProducts();
+        alert('Variants added');
+    } catch (e) {
+        status.textContent = (e && e.message) ? `Connection error: ${e.message}` : 'Connection error. Ensure server is running.';
+    }
+};
+
+window.closeVariants = function() {
+    const modal = document.getElementById('variants-modal');
+    if (modal) modal.style.display = 'none';
+};
+
+// --- Pause / Held Orders ---
+window.pauseOrder = async function() {
+    if (!cart || cart.length === 0) { alert('Cart is empty'); return; }
+    const subtotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    const vat = Math.round(subtotal * VAT_RATE);
+    const total = subtotal + vat;
+    const method = paymentMethodEl ? paymentMethodEl.value : 'cash';
+    let reference = paymentRefEl ? paymentRefEl.value.trim() : '';
+    if (method === 'bank') {
+        reference = bankSelectEl ? bankSelectEl.value : '';
+    }
+    const note = prompt('Optional note for this held order (e.g., customer name):', '');
+    try {
+        const response = await apiCall('/api/holds', {
+            method: 'POST',
+            body: JSON.stringify({
+                items: cart,
+                payment_method: method,
+                payment_reference: reference,
+                subtotal, vat, total,
+                note
+            }),
+            allow401: true
+        });
+        const result = await response.json();
+        if (response.status === 401) {
+            alert('Session expired. Please login and try again.');
+            if (loginModal) loginModal.style.display = 'block';
+            return;
+        }
+        if (!response.ok || result.message !== 'success') {
+            alert('Failed to pause order: ' + (result.error || 'Unknown error'));
+            return;
+        }
+        const id = result.id;
+        cart = [];
+        renderCart();
+        alert('Order paused as Hold #' + id);
+    } catch (e) {
+        alert('Connection error');
+    }
+};
+
+window.openHeldOrders = function() {
+    if (!holdsModal) return;
+    holdsModal.style.display = 'block';
+    refreshHeldOrders();
+};
+
+async function loadHeldRows() {
+    try {
+        const response = await apiCall('/api/holds?mine=1', { allow401: true });
+        const result = await response.json();
+        if (response.status === 401) {
+            if (holdsBody) holdsBody.innerHTML = '<tr><td colspan="6" style="color:red;">Please login to view held orders</td></tr>';
+            if (loginModal) loginModal.style.display = 'block';
+            return;
+        }
+        if (response.ok && result.message === 'success') {
+            const rows = result.data || [];
+            if (rows.length === 0) {
+                if (holdsBody) holdsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;">No held orders</td></tr>';
+            } else {
+                if (holdsBody) {
+                    holdsBody.innerHTML = rows.map(r => `
+                        <tr>
+                            <td>#${r.id}</td>
+                            <td>${r.date}</td>
+                            <td>${r.cashier || ''}</td>
+                            <td>${(r.note || '').slice(0,40)}</td>
+                            <td>KES ${(Number(r.total||0)).toLocaleString()}</td>
+                            <td>
+                                <button class="secondary-btn" onclick="resumeHold(${r.id})"><i class="fa-solid fa-play"></i> Resume</button>
+                                <button class="secondary-btn" onclick="deleteHold(${r.id})" style="margin-left:6px;color:#ef4444;border-color:#ef4444;"><i class="fa-solid fa-trash"></i></button>
+                            </td>
+                        </tr>
+                    `).join('');
+                }
+                if (holdsStatus) holdsStatus.textContent = `${rows.length} held`;
+            }
+        } else {
+            if (holdsBody) holdsBody.innerHTML = `<tr><td colspan="6" style="color:red;">${result.error || 'Failed to load held orders'}</td></tr>`;
+        }
+    } catch (e) {
+        if (holdsBody) holdsBody.innerHTML = '<tr><td colspan="6" style="color:red;">Connection error</td></tr>';
+    }
+}
+
+window.refreshHeldOrders = function() {
+    if (holdsBody) holdsBody.innerHTML = '<tr><td colspan="6" style="text-align:center;">Loading...</td></tr>';
+    loadHeldRows();
+};
+
+window.resumeHold = async function(id) {
+    try {
+        const response = await apiCall(`/api/holds/${id}`, { allow401: true });
+        const result = await response.json();
+        if (response.status === 401) {
+            alert('Please login to resume held orders.');
+            if (loginModal) loginModal.style.display = 'block';
+            return;
+        }
+        if (!response.ok || result.message !== 'success') {
+            alert('Failed to load hold');
+            return;
+        }
+        const data = result.data || {};
+        const items = Array.isArray(data.items) ? data.items : [];
+        cart = items.map(it => ({
+            productId: it.productId,
+            name: it.name,
+            price: Number(it.price),
+            quantity: Number(it.quantity)
+        }));
+        renderCart();
+        if (paymentMethodEl && data.payment_method) {
+            window.selectPayment(data.payment_method);
+        }
+        if (paymentRefEl && data.payment_reference) {
+            paymentRefEl.value = data.payment_reference;
+        }
+        if (holdsModal) holdsModal.style.display = 'none';
+        // Delete the hold now that it's resumed
+        try { await apiCall(`/api/holds/${id}`, { method: 'DELETE', allow401: true }); } catch (e) { /* ignore */ }
+    } catch (e) {
+        alert('Connection error');
+    }
+};
+
+window.deleteHold = async function(id) {
+    if (!confirm('Delete this held order?')) return;
+    try {
+        const response = await apiCall(`/api/holds/${id}`, { method: 'DELETE', allow401: true });
+        const result = await response.json();
+        if (response.status === 401) {
+            alert('Please login and try again.');
+            if (loginModal) loginModal.style.display = 'block';
+            return;
+        }
+        if (response.ok && result.message === 'success') {
+            refreshHeldOrders();
+        } else {
+            alert(result.error || 'Delete failed');
+        }
+    } catch (e) {
+        alert('Connection error');
+    }
+};
+
+// Close held orders modal
+const closeHolds = document.querySelector('.close-holds');
+if (closeHolds && holdsModal) {
+    closeHolds.addEventListener('click', () => holdsModal.style.display = 'none');
+}
+window.addEventListener('click', (e) => {
+    if (holdsModal && e.target === holdsModal) holdsModal.style.display = 'none';
+});
 
 window.setProductImage = async function(productId) {
     const input = document.createElement('input');
@@ -931,10 +1331,6 @@ function renderCart() {
                 <div class="item-info">
                     <h4>${item.name}</h4>
                     <p>KES ${item.price.toLocaleString()} x ${item.quantity}</p>
-                    ${(() => {
-                        const p = products.find(pp => pp.id === item.productId);
-                        return p && p.min_price != null ? `<small style="color:#64748b;">Min KES ${Number(p.min_price).toLocaleString()}</small>` : '';
-                    })()}
                     <button class="secondary-btn" style="padding:4px 8px;margin-top:6px;" onclick="editPrice(${item.productId})">Change Price</button>
                 </div>
                 <div class="item-actions">
@@ -959,12 +1355,12 @@ window.editPrice = function(productId) {
     const product = products.find(p => p.id === productId);
     if (!item || !product) return;
     const current = item.price;
-    const input = prompt(`Enter new price for ${item.name} (min ${product.min_price != null ? product.min_price : 0})`, String(current));
+    const input = prompt(`Enter new price for ${item.name}`, String(current));
     if (input == null) return;
     const newPrice = parseFloat(input);
     if (Number.isNaN(newPrice) || newPrice <= 0) { alert('Invalid price'); return; }
     if (product.min_price != null && newPrice < Number(product.min_price)) {
-        alert('Price below allowed minimum for this product');
+        alert(`This item cannot go below KES ${Number(product.min_price).toLocaleString()}`);
         return;
     }
     item.price = newPrice;
@@ -997,7 +1393,7 @@ checkoutBtn.addEventListener('click', async () => {
         for (const item of cart) {
             const p = products.find(pp => pp.id === item.productId);
             if (p && p.min_price != null && Number(item.price) < Number(p.min_price)) {
-                alert(`Price for ${p.name} is below minimum (Min KES ${Number(p.min_price).toLocaleString()})`);
+                alert(`This item cannot go below KES ${Number(p.min_price).toLocaleString()} (${p.name})`);
                 return;
             }
         }
@@ -1026,7 +1422,8 @@ checkoutBtn.addEventListener('click', async () => {
             
             showReceipt(saleId, items, saleSubtotal, saleVat, saleTotal, method, reference);
         } else {
-            alert('Error processing sale: ' + result.error);
+            const msg = result.error || result.message || `HTTP ${response.status}`;
+            alert('Error processing sale: ' + msg);
         }
     } catch (error) {
         console.error('Error:', error);
@@ -1147,8 +1544,8 @@ window.addBank = async function() {
     }
 }
 // --- Receipt Modal ---
-function showReceipt(saleId, items, subtotal, vat, total, method, reference) {
-    const date = new Date().toLocaleString();
+function showReceipt(saleId, items, subtotal, vat, total, method, reference, dateStr, cashierName) {
+    const date = dateStr || new Date().toLocaleString();
     let itemsHtml = items.map(item => {
         const lineTotal = item.price * item.quantity;
         return `
@@ -1164,20 +1561,21 @@ function showReceipt(saleId, items, subtotal, vat, total, method, reference) {
         <div style="text-align: center; margin-bottom: 15px; border-bottom: 1px dashed #ccc; padding-bottom: 10px;">
             <strong>PIMUT TRADERS</strong><br>
             Wholesale Shop<br>
-            Tel: +254 700 000 000
+            Tel: 0743599971
         </div>
         <p><strong>Sale ID:</strong> #${saleId}</p>
         <p><strong>Date:</strong> ${date}</p>
-        <p><strong>Cashier:</strong> ${userName || 'Unknown'}</p>
+        <p><strong>Cashier:</strong> ${(cashierName || userName) || 'Unknown'}</p>
         <p><strong>Payment:</strong> ${method || 'cash'}${reference ? ' (' + reference + ')' : ''}</p>
         <hr style="border: 0; border-top: 1px dashed #ccc; margin: 10px 0;">
         ${itemsHtml}
         <hr style="border: 0; border-top: 1px dashed #ccc; margin: 10px 0;">
         <div style="display:flex;justify-content:space-between;"><span>Subtotal</span><span>KES ${subtotal.toLocaleString()}</span></div>
-        <div style="display:flex;justify-content:space-between;"><span>VAT (${Math.round(VAT_RATE*100)}%)</span><span>KES ${vat.toLocaleString()}</span></div>
         <div style="display:flex;justify-content:space-between;font-weight:bold;font-size:1.1em;"><span>Total</span><span>KES ${total.toLocaleString()}</span></div>
         <div style="text-align: center; margin-top: 15px; font-size: 0.8em;">
             Thank you for shopping with us!
+            <br>
+            Goods once sold cannot be returned.
         </div>
     `;
     receiptModal.style.display = 'block';
@@ -1187,8 +1585,11 @@ window.closeReceipt = function() {
     receiptModal.style.display = 'none';
 };
 
-// Close modal when clicking X
-document.querySelector('.close-modal').addEventListener('click', window.closeReceipt);
+// Close modal when clicking X (guard if missing)
+const closeReceiptBtn = document.querySelector('.close-modal');
+if (closeReceiptBtn) {
+    closeReceiptBtn.addEventListener('click', window.closeReceipt);
+}
 
 // Close modal when clicking outside
 window.onclick = function(event) {
@@ -1370,12 +1771,51 @@ async function fetchCashierReport() {
     }
 }
 
+async function fetchItemsReport() {
+    const tbody = document.getElementById('items-report-body');
+    const periodEl = document.getElementById('items-period');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">Loading...</td></tr>';
+    try {
+        const startEl = document.getElementById('report-start');
+        const endEl = document.getElementById('report-end');
+        const start = startEl && startEl.value ? startEl.value : '';
+        const end = endEl && endEl.value ? endEl.value : '';
+        const period = periodEl && periodEl.value ? periodEl.value : 'daily';
+        const base = `/api/reports/items?period=${period}`;
+        const url = start && end ? `${base}&start=${start}&end=${end}` : base;
+        const response = await apiCall(url);
+        const result = await response.json();
+        if (response.ok && result.message === 'success') {
+            const rows = result.data || [];
+            if (rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;">No data</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(r => `
+                <tr>
+                    <td>${r.period_label}</td>
+                    <td>${r.item_name}</td>
+                    <td>${r.units_sold || 0}</td>
+                    <td>KES ${(r.revenue || 0).toLocaleString()}</td>
+                </tr>
+            `).join('');
+        } else {
+            tbody.innerHTML = `<tr><td colspan="4" style="color:red;">Error: ${result.error || 'Unknown error'}</td></tr>`;
+        }
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color:red;">Failed to load</td></tr>';
+    }
+}
+
 function refreshReports() {
     fetchDailyReport();
     if (userRole === 'admin' || userRole === 'super_admin') {
-        fetchCashierReport();
+        if (userRole === 'admin') fetchCashierReport();
         fetchPaymentMethodReport();
+        fetchItemsReport();
     }
+    fetchRecentSales();
 }
 
 // Payment Method Selection
